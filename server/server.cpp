@@ -8,16 +8,15 @@
 #include <stdlib.h>
 #include <lua.hpp>
 #include <fcntl.h>
+#include <unistd.h>
 
 #include <event2/event.h>
 #include <event2/buffer.h>
 #include <event2/bufferevent.h>
 #include <event2/thread.h>
 #include <event2/event-config.h>
-#include <event.h>
 
 #include <signal.h>
-#include <mcheck.h>
 using namespace std; 
 const int MAXLINE = 1500;
 
@@ -182,8 +181,6 @@ struct event* event_signal(struct event_base* base) {
 
 int main() 
 { 
-	setenv("MALLOC_TRACE","memory.log",1);
-	mtrace();
 	L = luaL_newstate();
 	loadLua(L);
 
@@ -193,16 +190,14 @@ int main()
 	base = event_base_new(); 
 	
 	// 添加事件
-	//struct event *evListen = event_accept(base);
-	event_accept(base);
+	struct event *evListen = event_accept(base);
 	struct event *evSignal = event_signal(base);
 
 	// 事件循环 
 	event_base_dispatch(base); 
-	//event_free(evListen);
+	event_free(evListen);
 	event_free(evSignal);
 	event_base_free(base);
 	lua_close(L);
-	muntrace();
 	return 0; 
 }

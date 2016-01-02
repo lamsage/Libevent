@@ -7,10 +7,14 @@
 #include <netdb.h> 
 #include <stdlib.h>
 #include <lua.hpp>
+#include <unistd.h>
 
-#include <event.h> 
+#include <event2/event.h>
+#include <event2/buffer.h>
+#include <event2/bufferevent.h>
+#include <event2/thread.h>
+#include <event2/event-config.h>
 #include <signal.h>
-#include <mcheck.h>
 using namespace std; 
 const int MAXLINE = 1500;
 
@@ -24,7 +28,7 @@ int call(lua_State *L) {
 	char buf[1500];
 	lua_getglobal(L, "serialize");
 	lua_insert(L, 1);
-	
+
 	if(lua_pcall(L, n, 1, 0)!= 0) {
 		cout<<"error running function 'serialize' :"<<lua_tostring(L, -1)<<endl;
 		exit(0);
@@ -47,19 +51,12 @@ int call(lua_State *L) {
 }
 
 // 读事件回调函数 
-void onRead(int iCliFd, short iEvent, void *arg) 
+void onRead(struct bufferevent *bev, void *arg) 
 { 
-	int iLen; 
 	char buf[MAXLINE], Pto[MAXLINE], Arg[MAXLINE]; 
+	size_t len;
+	len = bufferevent_read(bev, buf, sizeof(buf));
 
-	iLen = recv(iCliFd, buf, MAXLINE, 0); 
-
-	if (iLen <= 0) { 
-		cout << "Client Close" << endl; 
-
-		close(iCliFd); 
-		exit(0); 
-	}
 	sscanf(buf, "%s %s", Pto, Arg);
 	sprintf(buf, "return %s", Arg);
 	if(luaL_loadbuffer(L,buf, strlen(buf), "line") || lua_pcall(L, 0, -1, 0)) {
@@ -76,6 +73,7 @@ void onRead(int iCliFd, short iEvent, void *arg)
 		cout<<"error running function 'test' :"<<lua_tostring(L, -1)<<endl;
 		exit(0);
 	}
+
 } 
 
 void onInput(int fd, short iEvent, void *arg)
@@ -119,6 +117,7 @@ int sock(const char *Ip, int port) {
 
 	// 创建tcpSocket（iCliFd），监听本机8888端口   
 	sockFd = socket(AF_INET, SOCK_STREAM, 0);   
+	evutil_make_socket_nonblocking(sockFd);
 	connect(sockFd, (struct sockaddr*)&sSvrAddr, sizeof(sSvrAddr));
 	return sockFd;
 }
@@ -126,7 +125,7 @@ int sock(const char *Ip, int port) {
 void signal_cb(int fd, short event, void *arg)
 {
 	cout << "got signal\n";
-	event_base_loopbreak(base);
+	event_base_loopexit(base, NULL);
 }
 
 //添加信号结束event_loop事件
@@ -136,11 +135,29 @@ struct event* event_signal(struct event_base* base) {
 	event_add(evSignal, NULL);
 	return evSignal;
 }
-struct event * eventRead(event_base *base) {
-	struct event *evRead = event_new(base, iCliFd, EV_READ|EV_PERSIST, onRead, NULL); 
-	event_base_set(base, evRead); 
-	event_add(evRead, NULL); 
-	return evRead;
+
+void errorcb(struct bufferevent *bev, short error, void *ctx)
+{
+	if (error & BEV_EVENT_EOF)
+	{
+		printf("connection closed\n");
+	}
+	else if (error & BEV_EVENT_ERROR)
+	{
+		printf("some other error\n");
+	}
+	else if (error & BEV_EVENT_TIMEOUT)
+	{
+		printf("Timed out\n");
+	}
+	bufferevent_free(bev);
+}
+
+void eventRead(event_base *base) {
+	struct bufferevent *bev;
+	bev = bufferevent_socket_new(base, iCliFd, BEV_OPT_CLOSE_ON_FREE);
+	bufferevent_setcb(bev, onRead, NULL, errorcb, NULL);
+	bufferevent_enable(bev, EV_READ | EV_WRITE);
 }
 
 struct event * eventInput(event_base *base) {
@@ -161,13 +178,12 @@ int main()
 	// 初始化base 
 	base = event_base_new(); 
 
-	struct event *evRead = eventRead(base); 
+	eventRead(base); 
 	struct event *evInput = eventInput(base); 
 	struct event *evSignal = event_signal(base);
 
 	// 事件循环 
 	event_base_dispatch(base); 
-	event_free(evRead);
 	event_free(evInput);
 	event_free(evSignal);
 	event_base_free(base);
