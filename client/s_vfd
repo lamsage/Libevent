@@ -1,0 +1,5 @@
+return {
+	desc = "test my s_sum",
+	arg_list = {
+	}
+}

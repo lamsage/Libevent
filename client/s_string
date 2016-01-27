@@ -1,0 +1,8 @@
+return {
+	desc = "test my s_string",
+	arg_list = {
+		{"x", "string"},
+		{"y", "number"},
+		{"z", "string", 0},
+	}
+}

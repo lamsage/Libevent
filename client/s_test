@@ -1,0 +1,7 @@
+return {
+	desc = "test s_test",
+	arg_list = {
+		{"i", "number"},
+		{"j", "number"},
+	}
+}

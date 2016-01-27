@@ -1,6 +1,4 @@
-write : write.cpp message.pb.cc
-	g++ write.cpp message.pb.cc -o write -lprotobuf
-read : read.cpp message.pb.cc
-	g++ read.cpp message.pb.cc -o read -lprotobuf
+test : test.cpp
+	g++ test.cpp -o test -I/include -lprotobuf -llua -lm -ldl -g 
 clean :
-	rm -f write read log
+	rm -f log test

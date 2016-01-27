@@ -1,0 +1,9 @@
+return {
+	desc = "test my proto",
+	arg_list = {
+		{"flag", "number"},
+		{"country_id", "number"},
+		{"chapter_id", "number"},
+		{"reward_item_data", "number", 0},
+	}
+}

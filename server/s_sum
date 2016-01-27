@@ -1,0 +1,8 @@
+return {
+	desc = "test my s_sum",
+	arg_list = {
+		{"x", "number"},
+		{"y", "number"},
+		{"z", "s_test", 0},
+	}
+}

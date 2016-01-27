@@ -1,0 +1,6 @@
+return {
+	desc = "test my",
+	arg_list = {
+		{"value", "number"},
+	}
+}

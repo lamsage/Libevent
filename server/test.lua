@@ -1,30 +1,23 @@
-function getSum(vfd, a, b, c)
-	s = a + b + c
-	print(s)
-	for_caller.c_print(vfd, s)
+caller.c_print = Call
+function test(fd, x, y, z)
+	print(fd, x, y, z)
+	caller.c_print(fd, x + y)
 end
-
-function getMul(vfd, a, b, c)
-	s = a * b * c
-	print(s)
-	for_caller.c_print(vfd, s)
+caller.s_sum = test
+function test2(fd, i, j)
+	print(fd, i, j)
+	caller.c_print(fd, i - j)
 end
-
-function getValue(vfd, key, table)
-	for k, v in pairs(table) do
-		if k == key then
-			print(v)
-			for_caller.c_print(vfd, v)
-		end
+caller.s_test = test2
+function test3(fd)
+	print(fd)
+	caller.c_print(fd, fd)
+end
+caller.s_vfd = test3
+function test4(fd, s1, i, s2 )
+	print(s1, i, s2)
+	for k, v in pairs(s2) do
+		print(k, v)
 	end
 end
-
-function getVfd(vfd)
-	print(vfd)
-	for_caller.c_print(vfd,vfd)
-end
-
-for_caller.s_sum	=	getSum
-for_caller.s_mul 	= 	getMul
-for_caller.s_getValue 	=	getValue
-for_caller.s_getVfd	=	getVfd
+caller.s_string = test4

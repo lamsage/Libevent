@@ -8,6 +8,8 @@
 #include <stdlib.h>
 #include <lua.hpp>
 #include <unistd.h>
+#include <fstream>
+#include <map>
 
 #include <event2/event.h>
 #include <event2/buffer.h>
@@ -15,65 +17,80 @@
 #include <event2/thread.h>
 #include <event2/event-config.h>
 #include <signal.h>
+
+#include "pb.h"
 using namespace std; 
 const int MAXLINE = 1500;
 
+map<int, string> ptoName;
+map<string, int> ptoNum;
 lua_State *L;
 int iCliFd;   
+struct bufferevent *bev;
 //事件base 
 struct event_base* base; 
 
-int call(lua_State *L) {
-	int n = lua_gettop(L);
-	char buf[1500];
-	lua_getglobal(L, "serialize");
-	lua_insert(L, 1);
-
-	if(lua_pcall(L, n, 1, 0)!= 0) {
-		cout<<"error running function 'serialize' :"<<lua_tostring(L, -1)<<endl;
-		exit(0);
-	}
-	const char *arg = lua_tostring(L, -1);
-
-	lua_getglobal(L, "getCall");
+int Call(lua_State *L) {
+	SetMessage(L);
+	lua_getglobal(L, "getPto");
 	if(lua_pcall(L, 0, 1, 0)!= 0) {
-		cout<<"error running function 'getCall' :"<<lua_tostring(L, -1)<<endl;
+		cout<<"error running function 'getPto' :"<<lua_tostring(L, -1)<<endl;
 		exit(0);
 	}
+	char buf[MAXLINE];
+	string data = SerializeToString();
 	const char *pto = lua_tostring(L, -1);
-	sprintf(buf, "%s %s", pto, arg);
-	int iLen;
-	iLen = send(iCliFd, buf, strlen(buf)+1, 0);
-	if(iLen <= 0) {
-		cout << " send error\n";
-	}
+	int seq = ptoNum[string(pto)];
+	sprintf(buf, "%d %s",seq, data.c_str());
+	cout << "length : "<< data.length() <<endl;
+	bufferevent_write(bev, buf, strlen(buf) +1);
 	return 0;
 }
 
+int offset = 0;
+char buf[MAXLINE];
 // 读事件回调函数 
 void onRead(struct bufferevent *bev, void *arg) 
 { 
-	char buf[MAXLINE], Pto[MAXLINE], Arg[MAXLINE]; 
-	size_t len;
-	len = bufferevent_read(bev, buf, sizeof(buf));
-
-	sscanf(buf, "%s %s", Pto, Arg);
-	sprintf(buf, "return %s", Arg);
-	if(luaL_loadbuffer(L,buf, strlen(buf), "line") || lua_pcall(L, 0, -1, 0)) {
-		cout<<"call return failed"<<endl;
-		exit(0);
+	char Pto[MAXLINE], Arg[MAXLINE]; 
+	bool flag = true;
+	while(flag) {
+		int len = bufferevent_read(bev, buf + offset, MAXLINE - offset);
+		if(len != MAXLINE - offset)
+			flag = false;
+		len +=offset;
+		offset = 0;
+		int seq = 0;
+		while(1) {
+			sscanf(buf + offset, "%d", &seq);
+			int j = 0;
+			while(buf[offset + j] != ' ') ++j;
+			++j ;
+			strcpy(Arg, buf + offset + j);
+			if(offset + strlen(buf + offset) + 1 > len) {
+				for(int i = 0; i < len - offset; i++)
+					buf[i] = buf[i+offset];
+				offset = len - offset;
+				break;
+			}
+			offset += strlen(buf + offset) + 1;
+			strcpy(Pto, ptoName[seq].c_str());
+			string data = string(Arg);
+			GenMessage(Pto);
+			ParseFromString(data);
+			GetMessage(Pto);
+			int n = lua_gettop(L);
+			lua_getglobal(L, "caller");
+			lua_pushstring(L, Pto);
+			lua_gettable(L, -2);
+			lua_insert(L, 1);
+			lua_pop(L, 1);
+			if(lua_pcall(L, n, -1, 0)!= 0) {
+				cout<<"error running function 'caller' :"<<lua_tostring(L, -1)<<endl;
+				exit(0);
+			}
+		}
 	}
-	int n = lua_gettop(L);
-	lua_getglobal(L, "for_caller");
-	lua_pushstring(L, Pto);
-	lua_gettable(L, -2);
-	lua_insert(L, 1);
-	lua_pop(L, 1);
-	if(lua_pcall(L, n, -1, 0)!= 0) {
-		cout<<"error running function 'test' :"<<lua_tostring(L, -1)<<endl;
-		exit(0);
-	}
-
 } 
 
 void onInput(int fd, short iEvent, void *arg)
@@ -81,30 +98,32 @@ void onInput(int fd, short iEvent, void *arg)
 	int iLen;
 	char buf[MAXLINE];
 	cin >> buf;
-
-	if(luaL_loadbuffer(L,buf, strlen(buf) , "line") || lua_pcall(L, 0, 0, 0)) {
-		cout<<"call lua failed"<<endl;
-		exit(0);
-	}
+	//for(int i = 0; i < 20000; ++i) {
+		if(luaL_loadfile(L,"test.lua") || lua_pcall(L, 0, 0, 0)) {
+			cout<<"call test failed"<<endl;
+			exit(0);
+		}
+	//}
+	cout << "finish\n";
 }
 
 
 void loadLua(lua_State *L) {
-	luaL_openlibs(L);
-	lua_pushcfunction(L, call);
-	lua_setglobal(L, "call");
-	if(luaL_loadfile(L,"util.lua") || lua_pcall(L, 0, 0, 0)) {
-		cout<<"call pto failed"<<endl;
-		exit(0);
+	LoadFile();
+	ifstream in("protocol", ios::in);
+	char name[MAXLINE];
+	int sum = 0;
+	while(in>>name) {
+		BuildProto(name);
+		ptoName[++sum] = string(name);
+		ptoNum[string(name)] = sum;
 	}
-	if(luaL_loadfile(L,"pto.lua") || lua_pcall(L, 0, 0, 0)) {
-		cout<<"call pto failed"<<endl;
-		exit(0);
-	}
-	if(luaL_loadfile(L,"test.lua") || lua_pcall(L, 0, 0, 0)) {
-		cout<<"call lua failed"<<endl;
-		exit(0);
-	}
+	//BuildProto("s_test");
+	//BuildProto("s_sum");
+	//BuildProto("c_print");
+	BuildFile();
+	lua_pushcfunction(L, Call);
+	lua_setglobal(L, "Call");
 }
 
 int sock(const char *Ip, int port) {
@@ -154,7 +173,6 @@ void errorcb(struct bufferevent *bev, short error, void *ctx)
 }
 
 void eventRead(event_base *base) {
-	struct bufferevent *bev;
 	bev = bufferevent_socket_new(base, iCliFd, BEV_OPT_CLOSE_ON_FREE);
 	bufferevent_setcb(bev, onRead, NULL, errorcb, NULL);
 	bufferevent_enable(bev, EV_READ | EV_WRITE);
@@ -169,7 +187,6 @@ struct event * eventInput(event_base *base) {
 
 int main() 
 { 
-
 	L = luaL_newstate();
 	loadLua(L);
 

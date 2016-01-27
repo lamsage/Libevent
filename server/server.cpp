@@ -9,6 +9,8 @@
 #include <lua.hpp>
 #include <fcntl.h>
 #include <unistd.h>
+#include <fstream>
+#include <map>
 
 #include <event2/event.h>
 #include <event2/buffer.h>
@@ -17,67 +19,91 @@
 #include <event2/event-config.h>
 
 #include <signal.h>
+#include "pb.h"
 using namespace std; 
 const int MAXLINE = 1500;
 
-lua_State *L;
+struct Buffer {
+	char buf[MAXLINE];
+	int offset;
+};
+map<int, Buffer> Buf;
+map<int, string> ptoName;
+map<string, int> ptoNum;
 //事件base 
 struct event_base* base; 
 int iSvrFd;
 struct bufferevent *bevs[FD_SETSIZE];
+lua_State *L;
 
-int call(lua_State *L) {
+int Call(lua_State *L) {
 	int fd = lua_tointeger(L, 1);
 	lua_remove(L, 1);
-	int n = lua_gettop(L);
-	char buf[MAXLINE];
-	lua_getglobal(L, "serialize");
-	lua_insert(L, 1);
-
-	if(lua_pcall(L, n, 1, 0)!= 0) {
-		cout<<"error running function 'serialize' :"<<lua_tostring(L, -1)<<endl;
-		exit(0);
-	}
-	const char *arg = lua_tostring(L, -1);
-
-	lua_getglobal(L, "getCall");
+	SetMessage(L);
+	lua_getglobal(L, "getPto");
 	if(lua_pcall(L, 0, 1, 0)!= 0) {
-		cout<<"error running function 'getCall' :"<<lua_tostring(L, -1)<<endl;
+		cout<<"error running function 'getPto' :"<<lua_tostring(L, -1)<<endl;
 		exit(0);
 	}
+	char buf[MAXLINE];
+	string data = SerializeToString();
 	const char *pto = lua_tostring(L, -1);
-	sprintf(buf, "%s %s", pto, arg);
-	bufferevent_write(bevs[fd], buf, strlen(buf) +1);
+	int seq = ptoNum[string(pto)];
+	sprintf(buf, "%d %s",seq, data.c_str());
+	cout << "length : " << data.length() <<endl;
+	bufferevent_write(bevs[fd], buf, strlen(buf) + 1);
 	return 0;
 }
 
+//int offset = 0;
+//char buf[MAXLINE];
 // 读事件回调函数 
 void onRead(struct bufferevent *bev, void *arg) 
 { 
 	int iCliFd = bufferevent_getfd(bev);
-	char buf[MAXLINE], Pto[MAXLINE], Arg[MAXLINE]; 
-	size_t len;
-	len = bufferevent_read(bev, buf, sizeof(buf));
-
-	sscanf(buf, "%s %s", Pto, Arg);
-	sprintf(buf, "return %s", Arg);
-	if(luaL_loadbuffer(L,buf, strlen(buf), "line") || lua_pcall(L, 0, -1, 0)) {
-		cout<<"call return failed"<<endl;
-		exit(0);
+	char Pto[MAXLINE], Arg[MAXLINE]; 
+	bool flag = true;
+	char *buf = Buf[iCliFd].buf;
+	int &offset = Buf[iCliFd].offset;
+	while(flag) {
+		int len = bufferevent_read(bev, buf + offset, MAXLINE - offset);
+		if(len != MAXLINE - offset)
+			flag = false;
+		len +=offset;
+		offset = 0;
+		int seq = 0;
+		while(1) {
+			sscanf(buf + offset, "%d", &seq);
+			int j = 0;
+			while(buf[offset + j] != ' ') ++j;
+			++j ;
+			strcpy(Arg, buf + offset + j);
+			if(offset + strlen(buf + offset) + 1 > len) {
+				for(int i = 0; i < len - offset; i++)
+					buf[i] = buf[i+offset];
+				offset = len - offset;
+				break;
+			}
+			offset += strlen(buf + offset) + 1;
+			strcpy(Pto, ptoName[seq].c_str());
+			string data = string(Arg);
+			GenMessage(Pto);
+			ParseFromString(data);
+			GetMessage(Pto);
+			lua_pushinteger(L,iCliFd);
+			lua_insert(L, 1);
+			int n = lua_gettop(L);
+			lua_getglobal(L, "caller");
+			lua_pushstring(L, Pto);
+			lua_gettable(L, -2);
+			lua_insert(L, 1);
+			lua_pop(L, 1);
+			if(lua_pcall(L, n, -1, 0)!= 0) {
+				cout<<"error running function 'test' :"<<lua_tostring(L, -1)<<endl;
+				exit(0);
+			}
+		}
 	}
-	lua_pushinteger(L,iCliFd);
-	lua_insert(L, 1);
-	int n = lua_gettop(L);
-	lua_getglobal(L, "for_caller");
-	lua_pushstring(L, Pto);
-	lua_gettable(L, -2);
-	lua_insert(L, 1);
-	lua_pop(L, 1);
-	if(lua_pcall(L, n, -1, 0)!= 0) {
-		cout<<"error running function 'test' :"<<lua_tostring(L, -1)<<endl;
-		exit(0);
-	}
-
 } 
 
 //出错回调函数
@@ -95,6 +121,10 @@ void errorcb(struct bufferevent *bev, short error, void *ctx)
 	{
 		printf("Timed out\n");
 	}
+	int iCliFd = bufferevent_getfd(bev);
+	map<int, Buffer>::iterator iter;
+	iter = Buf.find(iCliFd);
+	Buf.erase(iter);
 	bufferevent_free(bev);
 }
 
@@ -120,29 +150,35 @@ void onAccept(int iSvrFd, short iEvent, void *arg)
 		bufferevent_setcb(bev, onRead, NULL, errorcb, NULL);
 		bevs[iCliFd] = bev;
 		bufferevent_enable(bev, EV_READ | EV_WRITE);
+		Buf[iCliFd] = Buffer();
+		Buf[iCliFd].offset = 0;
 	}
 } 
 
 void signal_cb(int fd, short event, void *arg)
 {
 	cout << "got signal\n";
-	event_base_loopbreak(base);
+	event_base_loopexit(base, NULL);
 }
 
 void loadLua(lua_State *L) {
-	luaL_openlibs(L);
-	lua_pushcfunction(L, call);
-	lua_setglobal(L, "call");
-	if(luaL_loadfile(L,"util.lua") || lua_pcall(L, 0, 0, 0)) {
-		cout<<"call pto failed"<<endl;
-		exit(0);
+	LoadFile();
+	ifstream in("protocol", ios::in);
+	char name[MAXLINE];
+	int sum = 0;
+	while(in>>name) {
+		BuildProto(name);
+		ptoName[++sum] = string(name);
+		ptoNum[string(name)] = sum;
 	}
-	if(luaL_loadfile(L,"pto.lua") || lua_pcall(L, 0, 0, 0)) {
-		cout<<"call pto failed"<<endl;
-		exit(0);
-	}
+	//BuildProto("s_test");
+	//BuildProto("s_sum");
+	//BuildProto("c_print");
+	BuildFile();
+	lua_pushcfunction(L, Call);
+	lua_setglobal(L, "Call");
 	if(luaL_loadfile(L,"test.lua") || lua_pcall(L, 0, 0, 0)) {
-		cout<<"call lua failed"<<endl;
+		cout<<"call test failed"<<endl;
 		exit(0);
 	}
 }
@@ -188,7 +224,7 @@ int main()
 
 	// 初始化base 
 	base = event_base_new(); 
-	
+
 	// 添加事件
 	struct event *evListen = event_accept(base);
 	struct event *evSignal = event_signal(base);
@@ -198,6 +234,7 @@ int main()
 	event_free(evListen);
 	event_free(evSignal);
 	event_base_free(base);
+	clearPB();
 	lua_close(L);
 	return 0; 
 }
